@@ -22,10 +22,6 @@ public class Order {
     private Client client;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "employee_id")
-    private Employee employee;
-
-    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "product_id")
     private Product product;
 
@@ -37,12 +33,5 @@ public class Order {
 
     private Integer estimatedOrderTime;
 
-    public Order(Client client, Employee employee, Product product, LocalDateTime now, int count, int estTime, String price) {
-        this.client = client;
-        this.employee = employee;
-        this.estimatedOrderTime = estTime;
-        this.dateTime = now;
-        this.productCount = count;
-        this.price = price;
-    }
+    private String cost;
 }

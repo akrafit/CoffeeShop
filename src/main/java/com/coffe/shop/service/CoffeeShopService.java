@@ -1,19 +1,22 @@
 package com.coffe.shop.service;
 
-import com.coffe.shop.dto.OrderStatusDto;
-import com.coffe.shop.entity.*;
-import com.coffe.shop.entity.enums.OrderStatusEnum;
+import com.coffe.shop.dto.*;
+import com.coffe.shop.entity.Order;
+import com.coffe.shop.entity.OrderStatus;
+import com.coffe.shop.entity.enums.Status;
 import com.coffe.shop.repository.*;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.CommandLineRunner;
-import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
-@Service
+
+
 @Slf4j
+@Service
+@Transactional
 public class CoffeeShopService implements OrderService {
     private final ClientRepository clientRepository;
     private final EmployeeRepository employeeRepository;
@@ -29,88 +32,120 @@ public class CoffeeShopService implements OrderService {
         this.productRepository = productRepository;
     }
 
-    @Override
-    public void publishEvent(OrderStatus event) {
-        List<OrderStatus> orderStatusList = orderStatusRepository.findOrderStatusByOrder(event.getOrder());
-        if (orderStatusList.size() == 0 && event.getOrderStatusEnum().equals(OrderStatusEnum.ORDER_REGISTERED)) {
-            log.info("Order {} registered",event.getOrder().getId());
-            orderStatusRepository.save(new OrderStatus(event));
+    public void registerOrder(OrderRegisteredDto registeredDto) {
+        OrderStatus orderStatusLast = getLastOrderStatus(orderStatusRepository.findOrderStatusByOrder_Id(registeredDto.getOrderId()));
+        if (orderStatusLast == null) {
+            Order order = findOrder(registeredDto.getOrderId());
+            order.setClient(clientRepository.getReferenceById(registeredDto.getClientId()));
+            order.setProduct(productRepository.getReferenceById(registeredDto.getProductId()));
+            order.setEstimatedOrderTime(registeredDto.getEstimatedOrderTime());
+            order.setDateTime(LocalDateTime.now());
+            order.setCost(registeredDto.getCost());
+
+            OrderStatus orderStatus = new OrderStatus();
+            orderStatus.setOrder(order);
+            orderStatus.setEmployee(employeeRepository.getReferenceById(registeredDto.getEmployeeId()));
+            orderStatus.setStatus(Status.ORDER_REGISTERED);
+            publishEvent(orderStatus);
+            log.info("Event was successfully registered by {}, order {} registered", orderStatus.getEmployee().getName(), order.getId());
         } else {
-            for (OrderStatus orderStatus : orderStatusList) {
-                log.info(orderStatus.getOrderStatusEnum().toString());
-                //System.out.println((orderStatus.getOrderStatusEnum().equals(OrderStatusEnum.ORDER_CANCELLED)));
-                if (orderStatus.getOrderStatusEnum().equals(OrderStatusEnum.ORDER_CANCELLED) || orderStatus.getOrderStatusEnum().equals(OrderStatusEnum.ORDER_WAS_ISSUED)) {
-                    log.info("Can't change status: {} , order {} was cancelled or was issued", event.getOrderStatusEnum(), event.getOrder().getId());
-                    return;
-                }
-            }
-            orderStatusRepository.save(new OrderStatus(event));
-            log.info("Order {} change status: {}", event.getOrder().getId(), event.getOrderStatusEnum());
+            log.info("Can't save order status, order {} was registered early", registeredDto.getOrderId());
+        }
+
+    }
+
+    public void progressOrder(OrderInProgressDto orderInProgressDto) {
+        OrderStatus orderStatus = getLastOrderStatus(orderStatusRepository.findOrderStatusByOrderIdOrderByDateTimeDateTimeDesc(orderInProgressDto.getOrderId()));
+        if (orderStatus == null || checkOrderStatus(orderStatus)) {
+            log.info("Can't find order status for order {}, or order don't registered early", orderInProgressDto.getOrderId());
+            return;
+        }
+        if (orderStatus.getStatus().equals(Status.ORDER_REGISTERED)) {
+            Order order = findOrder(orderInProgressDto.getOrderId());
+            OrderStatus orderStatusNew = new OrderStatus();
+            orderStatusNew.setOrder(order);
+            orderStatusNew.setEmployee(employeeRepository.getReferenceById(orderInProgressDto.getEmployeeId()));
+            orderStatusNew.setStatus(Status.ORDER_IN_PROGRESS);
+            publishEvent(orderStatusNew);
+            log.info("Event was successfully registered by {}, order {} in progress", orderStatusNew.getEmployee().getName(), order.getId());
+        }
+    }
+
+    public void readyOrder(OrderIsReadyDto orderIsReadyDto) {
+        OrderStatus orderStatusLast = getLastOrderStatus(orderStatusRepository.findOrderStatusByOrderIdOrderByDateTimeDateTimeDesc(orderIsReadyDto.getOrderId()));
+        if (orderStatusLast == null || checkOrderStatus(orderStatusLast)) {
+            log.info("Can't find order status for order {}, or order status don't in progress", orderIsReadyDto.getOrderId());
+            return;
+        }
+        if (orderStatusLast.getStatus().equals(Status.ORDER_IN_PROGRESS)) {
+            Order order = findOrder(orderIsReadyDto.getOrderId());
+            OrderStatus orderStatusNew = new OrderStatus();
+            orderStatusNew.setOrder(order);
+            orderStatusNew.setEmployee(employeeRepository.getReferenceById(orderIsReadyDto.getEmployeeId()));
+            orderStatusNew.setStatus(Status.ORDER_IS_READY);
+            publishEvent(orderStatusNew);
+            log.info("Event was successfully registered by {}, order {} is ready", orderStatusNew.getEmployee().getName(), order.getId());
+        }
+    }
+
+    public void cancelOrder(OrderCancelledDto orderCancelledDto) {
+        OrderStatus orderStatusLast = getLastOrderStatus(orderStatusRepository.findOrderStatusByOrderIdOrderByDateTimeDateTimeDesc(orderCancelledDto.getOrderId()));
+        if (orderStatusLast == null || checkOrderStatus(orderStatusLast)) {
+            log.info("Can't find order status for order {}, order status cancelled or issued", orderCancelledDto.getOrderId());
+            return;
+        }
+        Order order = findOrder(orderCancelledDto.getOrderId());
+        OrderStatus orderStatusNew = new OrderStatus();
+        orderStatusNew.setOrder(order);
+        orderStatusNew.setEmployee(employeeRepository.getReferenceById(orderCancelledDto.getEmployeeId()));
+        orderStatusNew.setStatus(Status.ORDER_CANCELLED);
+        orderStatusNew.setComment(orderCancelledDto.getReasonForCancellation());
+        publishEvent(orderStatusNew);
+        log.info("Event was successfully registered by {}, order {} is cancelled", orderStatusNew.getEmployee().getName(), order.getId());
+    }
+
+    public void issueOrder(OrderIssuedDto orderIssuedDto) {
+        OrderStatus orderStatusLast = getLastOrderStatus(orderStatusRepository.findOrderStatusByOrderIdOrderByDateTimeDateTimeDesc(orderIssuedDto.getOrderId()));
+        if (orderStatusLast == null || checkOrderStatus(orderStatusLast)) {
+            log.info("Can't find order status for order {}, order status cancelled or issued", orderIssuedDto.getOrderId());
+            return;
+        }
+
+        Order order = findOrder(orderIssuedDto.getOrderId());
+        OrderStatus orderStatusNew = new OrderStatus();
+        orderStatusNew.setOrder(order);
+        orderStatusNew.setEmployee(employeeRepository.getReferenceById(orderIssuedDto.getEmployeeId()));
+        orderStatusNew.setStatus(Status.ORDER_WAS_ISSUED);
+        publishEvent(orderStatusNew);
+        log.info("Event was successfully registered by {}, order {} was issued", orderStatusNew.getEmployee().getName(), order.getId());
+    }
+
+    private boolean checkOrderStatus(OrderStatus orderStatus) {
+        if (orderStatus.getStatus().equals(Status.ORDER_CANCELLED) || orderStatus.getStatus().equals(Status.ORDER_WAS_ISSUED)) {
+            log.info("Can't change status: {} , order {} was cancelled or was issued", orderStatus.getStatus(), orderStatus.getOrder().getId());
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    private OrderStatus getLastOrderStatus(List<OrderStatus> orderStatusList) {
+        if (orderStatusList.size() > 0) {
+            return orderStatusList.get(orderStatusList.size() - 1);
+        } else {
+            return null;
         }
     }
 
     @Override
-    public Order findOrder(int id) {
-        return orderRepository.getReferenceById(id);
+    public void publishEvent(OrderStatus event) {
+        orderStatusRepository.save(event);
     }
 
-    @Bean
-	public CommandLineRunner CommandLineRunnerBean() {
-        return args -> {
-            Client client = new Client("Клиент");
-            clientRepository.save(client);
-            Employee employee = new Employee("Сотрудник");
-            employeeRepository.save(employee);
-            Product product = new Product("Пицца");
-            productRepository.save(product);
 
-            Order order = new Order(client,employee,product, LocalDateTime.now(),1, 60, "777");
-            order.setClient(client);
-            order.setEmployee(employee);
-            order.setProduct(product);
-            orderRepository.save(order);
-
-            OrderStatusDto orderStatusdto = new OrderStatusDto();
-            orderStatusdto.setOrder(order);
-
-            orderStatusdto.setOrderStatusEnum(OrderStatusEnum.ORDER_REGISTERED);
-            orderStatusdto.setDateTime(LocalDateTime.now());
-            publishEvent(new OrderStatus(orderStatusdto));
-
-            orderStatusdto.setOrderStatusEnum(OrderStatusEnum.ORDER_IN_PROGRESS);
-            orderStatusdto.setDateTime(LocalDateTime.now());
-            publishEvent(new OrderStatus(orderStatusdto));
-
-            orderStatusdto.setOrderStatusEnum(OrderStatusEnum.ORDER_IS_READY);
-            orderStatusdto.setDateTime(LocalDateTime.now());
-            publishEvent(new OrderStatus(orderStatusdto));
-
-            orderStatusdto.setOrderStatusEnum(OrderStatusEnum.ORDER_WAS_ISSUED);
-            orderStatusdto.setDateTime(LocalDateTime.now());
-            publishEvent(new OrderStatus(orderStatusdto));
-
-            order = new Order(client,employee,product, LocalDateTime.now(),2, 60, "888");
-            order.setClient(client);
-            order.setEmployee(employee);
-            order.setProduct(product);
-            orderRepository.save(order);
-
-            orderStatusdto = new OrderStatusDto();
-            orderStatusdto.setOrder(order);
-
-            orderStatusdto.setOrderStatusEnum(OrderStatusEnum.ORDER_REGISTERED);
-            orderStatusdto.setDateTime(LocalDateTime.now());
-            publishEvent(new OrderStatus(orderStatusdto));
-
-            orderStatusdto.setOrderStatusEnum(OrderStatusEnum.ORDER_CANCELLED);
-            orderStatusdto.setDateTime(LocalDateTime.now());
-            publishEvent(new OrderStatus(orderStatusdto));
-
-            orderStatusdto.setOrderStatusEnum(OrderStatusEnum.ORDER_REGISTERED);
-            orderStatusdto.setDateTime(LocalDateTime.now());
-            publishEvent(new OrderStatus(orderStatusdto));
-
-        };
+    @Override
+    public Order findOrder(int id) {
+        return orderRepository.getReferenceById(id);
     }
 
 }

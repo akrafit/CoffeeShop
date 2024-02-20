@@ -18,7 +18,7 @@ public class Employee {
     private String name;
 
     @OneToMany(mappedBy = "employee")
-    private List<Order> orderList;
+    private List<OrderStatus> orderList;
 
     public Employee(String name) {
         this.name = name;
